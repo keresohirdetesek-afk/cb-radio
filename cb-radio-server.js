@@ -41,7 +41,8 @@ wss.on('connection', (ws) => {
         case 'answer':
         case 'ice-candidate':
           // WebRTC szignalizáció továbbítása
-          broadcastToChannel(currentChannel, data, userId);
+          const messageWithFrom = { ...data, from: userId };
+          broadcastToChannel(currentChannel, messageWithFrom, userId);
           break;
           
         case 'start-transmission':
