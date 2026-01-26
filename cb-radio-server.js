@@ -1,24 +1,31 @@
-// WebRTC Szignalizációs Szerver CB Rádióhoz
-// Railway + Permissions Policy FIX
-
 const WebSocket = require('ws');
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
 
 const app = express();
-app.use(cors());
+
+// CORS - Mindent engedélyez
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type']
+}));
+
 app.use(express.json());
 
-// PERMISSIONS POLICY FIX - Mikrofon engedélyezése
+// PERMISSIONS POLICY - TELJES ENGEDÉLY
 app.use((req, res, next) => {
-    res.setHeader('Permissions-Policy', 'microphone=(self), camera=(self)');
-    res.setHeader('Feature-Policy', 'microphone *; camera *');
+    // Permissions-Policy - Modern browsers
+    res.setHeader('Permissions-Policy', 'microphone=*, camera=*, geolocation=*');
+    // Access-Control headers
     res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     next();
 });
 
-// Statikus fájlok kiszolgálása
+// Statikus fájlok
 app.use(express.static('.'));
 
 const server = http.createServer(app);
@@ -35,7 +42,7 @@ wss.on('connection', (ws, req) => {
   let currentChannel = null;
   let userId = generateId();
   
-  console.log(`✅ Új felhasználó: ${userId}`);
+  console.log(`✅ User: ${userId}`);
   
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
@@ -56,7 +63,6 @@ wss.on('connection', (ws, req) => {
         case 'offer':
         case 'answer':
         case 'ice-candidate':
-          // FIX: from field hozzáadása
           const messageWithFrom = { ...data, from: userId };
           broadcastToChannel(currentChannel, messageWithFrom, userId);
           break;
@@ -78,17 +84,13 @@ wss.on('connection', (ws, req) => {
           break;
       }
     } catch (error) {
-      console.error('❌ Üzenet hiba:', error);
+      console.error('Message error:', error);
     }
   });
   
   ws.on('close', () => {
-    console.log(`👋 Kilépett: ${userId}`);
+    console.log(`Bye: ${userId}`);
     handleLeaveChannel(ws, currentChannel, userId);
-  });
-  
-  ws.on('error', (error) => {
-    console.error(`❌ WebSocket hiba (${userId}):`, error);
   });
   
   function handleJoinChannel(ws, channelId, userId) {
@@ -119,7 +121,7 @@ wss.on('connection', (ws, req) => {
       userId
     }, userId);
     
-    console.log(`📻 ${userId} → csatorna ${channelId} (${channels[channelId].length} fő)`);
+    console.log(`Ch${channelId}: ${userId} (${channels[channelId].length} users)`);
   }
   
   function handleLeaveChannel(ws, channelId, userId) {
@@ -131,7 +133,6 @@ wss.on('connection', (ws, req) => {
     
     if (channels[channelId].length === 0) {
       delete channels[channelId];
-      console.log(`🗑️  Csatorna ${channelId} törölve`);
     } else {
       broadcastToChannel(channelId, {
         type: 'peer-left',
@@ -144,77 +145,55 @@ wss.on('connection', (ws, req) => {
     if (!channelId || !channels[channelId]) return;
     
     const messageStr = JSON.stringify(message);
-    let sentCount = 0;
     
     channels[channelId].forEach(client => {
       if (client.userId !== excludeUserId && client.ws.readyState === WebSocket.OPEN) {
         client.ws.send(messageStr);
-        sentCount++;
       }
     });
-    
-    if (sentCount > 0 && message.type !== 'ice-candidate') {
-      console.log(`📡 ${message.type} → ${sentCount} fő (csatorna: ${channelId})`);
-    }
   }
 });
 
-// Heartbeat
 const interval = setInterval(() => {
   wss.clients.forEach((ws) => {
-    if (ws.isAlive === false) {
-      console.log('💀 Timeout - kapcsolat lezárva');
-      return ws.terminate();
-    }
+    if (ws.isAlive === false) return ws.terminate();
     ws.isAlive = false;
     ws.ping();
   });
 }, 30000);
 
-wss.on('close', () => {
-  clearInterval(interval);
-});
+wss.on('close', () => clearInterval(interval));
 
 function generateId() {
   return Math.random().toString(36).substr(2, 9);
 }
 
-// Health check
 app.get('/health', (req, res) => {
   const totalUsers = Object.values(channels).reduce((sum, ch) => sum + ch.length, 0);
   res.json({ 
     status: 'ok',
     channels: Object.keys(channels).length,
-    totalUsers: totalUsers,
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString()
+    totalUsers: totalUsers
   });
 });
 
-// Root endpoint
 app.get('/', (req, res) => {
   const totalUsers = Object.values(channels).reduce((sum, ch) => sum + ch.length, 0);
   res.send(`
     <!DOCTYPE html>
     <html>
-    <head>
-      <title>CB Rádió Szerver</title>
-      <style>
-        body { font-family: Arial; background: #1a1a1a; color: #fff; padding: 40px; text-align: center; }
-        h1 { color: #4CAF50; }
-        .status { background: #2a2a2a; padding: 20px; border-radius: 8px; display: inline-block; margin: 20px; }
-      </style>
+    <head><title>CB Radio Server</title>
+    <style>body{font-family:Arial;background:#1a1a1a;color:#fff;padding:40px;text-align:center}h1{color:#4CAF50}.box{background:#2a2a2a;padding:20px;border-radius:8px;display:inline-block;margin:20px}</style>
     </head>
     <body>
-      <h1>📻 CB Rádió Szerver</h1>
-      <div class="status">
-        <h2>✅ Szerver működik!</h2>
+      <h1>📻 CB Radio Server</h1>
+      <div class="box">
+        <h2>✅ Server Online</h2>
         <p>WebSocket: <code>wss://${req.get('host')}</code></p>
-        <p>Aktív csatornák: ${Object.keys(channels).length}</p>
-        <p>Összes felhasználó: ${totalUsers}</p>
+        <p>Channels: ${Object.keys(channels).length}</p>
+        <p>Users: ${totalUsers}</p>
       </div>
-      <p><a href="/cb-radio-standalone.html" style="color: #4CAF50;">📱 CB Rádió Megnyitása</a></p>
-      <p><a href="/test.html" style="color: #4CAF50;">🔧 Teszt Oldal</a></p>
+      <p><a href="/cb-radio-standalone.html" style="color:#4CAF50">📱 Open CB Radio</a></p>
     </body>
     </html>
   `);
@@ -223,20 +202,14 @@ app.get('/', (req, res) => {
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`
-╔════════════════════════════════════════╗
-║   📻 CB RÁDIÓ SZERVER ELINDULT        ║
-╠════════════════════════════════════════╣
-║   Port: ${PORT}                        
-║   Permissions Policy: ENABLED         ║
-║   Mikrofon: ENGEDÉLYEZVE              ║
-╚════════════════════════════════════════╝
+╔══════════════════════════════╗
+║  📻 CB RADIO SERVER         ║
+║  Port: ${PORT}              ║
+║  Permissions: FULL ACCESS   ║
+╚══════════════════════════════╝
   `);
 });
 
 process.on('SIGTERM', () => {
-  console.log('⚠️  SIGTERM - leállás...');
-  server.close(() => {
-    console.log('👋 Szerver leállt');
-    process.exit(0);
-  });
+  server.close(() => process.exit(0));
 });
