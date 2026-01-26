@@ -1,0 +1,18 @@
+# CB Rádió Szerver Környezeti Változók
+
+# Szerver port (alapértelmezett: 3001)
+PORT=3001
+
+# Éles környezet beállítások (production)
+# NODE_ENV=production
+
+# SSL tanúsítványok (HTTPS-hez szükséges éles környezetben)
+# SSL_CERT_PATH=/path/to/cert.pem
+# SSL_KEY_PATH=/path/to/key.pem
+
+# WebSocket beállítások
+# WS_PING_INTERVAL=30000
+# WS_PING_TIMEOUT=5000
+
+# Naplózás
+# LOG_LEVEL=info

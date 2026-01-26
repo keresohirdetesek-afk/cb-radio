@@ -1,0 +1,21 @@
+{
+  "name": "cb-radio-server",
+  "version": "1.0.0",
+  "description": "WebRTC szignalizációs szerver CB rádió alkalmazáshoz",
+  "main": "cb-radio-server.js",
+  "scripts": {
+    "start": "node cb-radio-server.js",
+    "dev": "nodemon cb-radio-server.js"
+  },
+  "keywords": ["webrtc", "cb-radio", "voice-chat"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.14.2",
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}

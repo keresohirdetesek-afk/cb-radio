@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CB Rádió - Teszt</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        .test-box {
+            background: #2a2a2a;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            border-left: 4px solid #4CAF50;
+        }
+        .test-box.error {
+            border-left-color: #f44336;
+        }
+        .test-box.warning {
+            border-left-color: #ff9800;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        .status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        .status.success { background: #4CAF50; }
+        .status.fail { background: #f44336; }
+        .status.pending { background: #ff9800; }
+        pre {
+            background: #1a1a1a;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        h1 { color: #4CAF50; }
+        h2 { color: #81C784; }
+    </style>
+</head>
+<body>
+    <h1>📻 CB Rádió - Rendszer Teszt</h1>
+    <p>Ez az oldal ellenőrzi, hogy minden megfelelően működik-e.</p>
+    
+    <div class="test-box" id="browserTest">
+        <h2>🌐 Böngésző kompatibilitás</h2>
+        <p>Böngésző: <span id="browserName"></span></p>
+        <p>WebRTC támogatás: <span id="webrtcSupport" class="status pending">Ellenőrzés...</span></p>
+        <p>getUserMedia támogatás: <span id="getUserMediaSupport" class="status pending">Ellenőrzés...</span></p>
+        <p>WebSocket támogatás: <span id="websocketSupport" class="status pending">Ellenőrzés...</span></p>
+    </div>
+    
+    <div class="test-box" id="micTest">
+        <h2>🎤 Mikrofon teszt</h2>
+        <button onclick="testMicrophone()">Mikrofon tesztelése</button>
+        <p id="micStatus"></p>
+    </div>
+    
+    <div class="test-box" id="serverTest">
+        <h2>🖥️ Szerver kapcsolat</h2>
+        <p>Szerver cím: <code>ws://localhost:3001</code></p>
+        <button onclick="testServer()">Szerver ellenőrzése</button>
+        <p id="serverStatus"></p>
+    </div>
+    
+    <div class="test-box">
+        <h2>✅ Következő lépések</h2>
+        <ol>
+            <li>Győződj meg róla, hogy minden teszt sikeres (zöld)</li>
+            <li>Indítsd el a szervert: <code>npm start</code> vagy <code>./start.sh</code></li>
+            <li>Nyisd meg a <code>cb-radio-standalone.html</code> fájlt</li>
+            <li>Nyisd meg ugyanazt a fájlt egy másik böngésző ablakban/eszközön</li>
+            <li>Válassz ugyanazt a csatornát mindkét helyen</li>
+            <li>Próbáld ki a kommunikációt!</li>
+        </ol>
+    </div>
+    
+    <div class="test-box warning">
+        <h2>⚠️ Fontos tudnivalók</h2>
+        <ul>
+            <li>Éles környezetben HTTPS szükséges!</li>
+            <li>Mobil böngészőkben engedélyezd a mikrofon hozzáférést</li>
+            <li>A hangerő gomb funkció nem minden böngészőben/eszközön működik</li>
+            <li>Tűzfal esetén nyisd meg a 3001-es portot</li>
+        </ul>
+    </div>
+
+    <script>
+        // Böngésző információ
+        document.getElementById('browserName').textContent = navigator.userAgent;
+        
+        // WebRTC támogatás ellenőrzése
+        if (window.RTCPeerConnection) {
+            document.getElementById('webrtcSupport').textContent = 'Támogatott ✓';
+            document.getElementById('webrtcSupport').className = 'status success';
+        } else {
+            document.getElementById('webrtcSupport').textContent = 'Nem támogatott ✗';
+            document.getElementById('webrtcSupport').className = 'status fail';
+        }
+        
+        // getUserMedia támogatás
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            document.getElementById('getUserMediaSupport').textContent = 'Támogatott ✓';
+            document.getElementById('getUserMediaSupport').className = 'status success';
+        } else {
+            document.getElementById('getUserMediaSupport').textContent = 'Nem támogatott ✗';
+            document.getElementById('getUserMediaSupport').className = 'status fail';
+        }
+        
+        // WebSocket támogatás
+        if (window.WebSocket) {
+            document.getElementById('websocketSupport').textContent = 'Támogatott ✓';
+            document.getElementById('websocketSupport').className = 'status success';
+        } else {
+            document.getElementById('websocketSupport').textContent = 'Nem támogatott ✗';
+            document.getElementById('websocketSupport').className = 'status fail';
+        }
+        
+        // Mikrofon teszt
+        async function testMicrophone() {
+            const statusEl = document.getElementById('micStatus');
+            statusEl.innerHTML = '<span class="status pending">Tesztelés...</span>';
+            
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                statusEl.innerHTML = '<span class="status success">Mikrofon működik! ✓</span>';
+                
+                // Vizualizáció
+                const audioContext = new AudioContext();
+                const analyser = audioContext.createAnalyser();
+                const source = audioContext.createMediaStreamSource(stream);
+                source.connect(analyser);
+                analyser.fftSize = 256;
+                
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                let maxVolume = 0;
+                
+                const measure = setInterval(() => {
+                    analyser.getByteFrequencyData(dataArray);
+                    const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+                    maxVolume = Math.max(maxVolume, average);
+                    statusEl.innerHTML = `<span class="status success">Mikrofon működik! ✓</span><br>Jelenlegi hangerő: ${Math.round(average)} / Max: ${Math.round(maxVolume)}`;
+                }, 100);
+                
+                setTimeout(() => {
+                    clearInterval(measure);
+                    stream.getTracks().forEach(track => track.stop());
+                    audioContext.close();
+                    statusEl.innerHTML = '<span class="status success">Mikrofon teszt befejezve! ✓</span>';
+                }, 5000);
+                
+            } catch (error) {
+                console.error('Mikrofon hiba:', error);
+                statusEl.innerHTML = `<span class="status fail">Hiba: ${error.message} ✗</span><br>Engedélyezd a mikrofon hozzáférést!`;
+            }
+        }
+        
+        // Szerver teszt
+        async function testServer() {
+            const statusEl = document.getElementById('serverStatus');
+            statusEl.innerHTML = '<span class="status pending">Kapcsolódás...</span>';
+            
+            try {
+                const ws = new WebSocket('ws://localhost:3001');
+                
+                ws.onopen = () => {
+                    statusEl.innerHTML = '<span class="status success">Szerver elérhető! ✓</span>';
+                    ws.close();
+                };
+                
+                ws.onerror = (error) => {
+                    console.error('WebSocket hiba:', error);
+                    statusEl.innerHTML = '<span class="status fail">Szerver nem elérhető! ✗</span><br>Bizonyosodj meg róla, hogy a szerver fut (npm start)';
+                };
+                
+                // Timeout 5 másodperc után
+                setTimeout(() => {
+                    if (ws.readyState !== WebSocket.OPEN) {
+                        ws.close();
+                        statusEl.innerHTML = '<span class="status fail">Időtúllépés! ✗</span><br>A szerver nem válaszol.';
+                    }
+                }, 5000);
+                
+            } catch (error) {
+                console.error('Kapcsolat hiba:', error);
+                statusEl.innerHTML = `<span class="status fail">Hiba: ${error.message} ✗</span>`;
+            }
+        }
+    </script>
+</body>
+</html>

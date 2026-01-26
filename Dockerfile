@@ -1,0 +1,23 @@
+FROM node:18-alpine
+
+# Munkakönyvtár létrehozása
+WORKDIR /app
+
+# Package fájlok másolása
+COPY package*.json ./
+
+# Függőségek telepítése
+RUN npm ci --only=production
+
+# Alkalmazás fájlok másolása
+COPY cb-radio-server.js ./
+
+# Port megnyitása
+EXPOSE 3001
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD node -e "require('http').get('http://localhost:3001/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
+
+# Szerver indítása
+CMD ["node", "cb-radio-server.js"]
