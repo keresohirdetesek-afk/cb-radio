@@ -55,11 +55,23 @@
                 this.render();
             }
             
-            async setupAudio() {
-                try {
-                    this.localStream = await navigator.mediaDevices.getUserMedia({
-                        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-                    });
+        async setupAudio() {
+    try {
+        // KÉNYSZERÍTJÜK a mikrofon engedélyt
+        console.log('🎤 Mikrofon engedély kérése...');
+        
+        this.localStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                // Mobil specifikus beállítások
+                sampleRate: 48000,
+                channelCount: 1
+            }
+        });
+        
+        console.log('✅ Mikrofon engedélyezve:', this.localStream.getAudioTracks()[0].label);
                     this.localStream.getAudioTracks().forEach(track => track.enabled = false);
                     this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
                     this.analyser = this.audioContext.createAnalyser();
