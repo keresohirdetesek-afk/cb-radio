@@ -1,6 +1,6 @@
 // WebRTC Szignalizációs Szerver CB Rádióhoz
 // Telepítendő csomagok: npm install ws express cors
-
+ 
 const WebSocket = require('ws');
 const express = require('express');
 const cors = require('cors');
