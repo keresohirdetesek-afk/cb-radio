@@ -3,11 +3,53 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CB Rádió v3.3</title>
+    <title>CB Rádió v4.0 - Chat</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .chat-window {
+            position: fixed;
+            background: rgba(17, 24, 39, 0.95);
+            border: 2px solid #fde047;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+        }
+        .chat-window.minimized {
+            height: 50px !important;
+            overflow: hidden;
+        }
+        .chat-header {
+            cursor: move;
+            user-select: none;
+        }
+        .chat-messages {
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: #fde047 #1f2937;
+        }
+        .chat-messages::-webkit-scrollbar {
+            width: 6px;
+        }
+        .chat-messages::-webkit-scrollbar-track {
+            background: #1f2937;
+        }
+        .chat-messages::-webkit-scrollbar-thumb {
+            background: #fde047;
+            border-radius: 3px;
+        }
+        .message-bubble {
+            animation: slideIn 0.3s ease-out;
+        }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
 </head>
 <body class="bg-gray-900">
     <div id="app"></div>
+    <div id="chatWindow"></div>
+    
     <script>
         const WS_SERVER = 'wss://cb-radio-production.up.railway.app';
         
@@ -37,6 +79,20 @@
                 this.userId = null;
                 this.spacePressed = false;
                 
+                // Chat features
+                this.chatEnabled = false;
+                this.chatMessages = [];
+                this.chatWindow = {
+                    open: false,
+                    minimized: false,
+                    x: window.innerWidth - 350,
+                    y: window.innerHeight - 500,
+                    width: 320,
+                    height: 450
+                };
+                this.recognition = null;
+                this.isRecognizing = false;
+                
                 window.addEventListener('beforeunload', () => this.cleanup());
                 this.init();
             }
@@ -46,12 +102,14 @@
                 if (this.ws) this.ws.close();
                 if (this.localStream) this.localStream.getTracks().forEach(t => t.stop());
                 if (this.audioContext) this.audioContext.close();
+                if (this.recognition) this.recognition.stop();
             }
             
             async init() {
                 await this.setupAudio();
                 this.connectWebSocket();
                 this.setupEventListeners();
+                this.loadChatSettings();
                 this.render();
             }
             
@@ -71,6 +129,40 @@
                 } catch (error) {
                     alert('Kérlek engedélyezd a mikrofon hozzáférést!');
                 }
+            }
+            
+            setupSpeechRecognition() {
+                if (!('webkitSpeechRecognition' in window)) {
+                    console.log('Speech recognition not supported');
+                    return;
+                }
+                
+                this.recognition = new webkitSpeechRecognition();
+                this.recognition.lang = 'hu-HU';
+                this.recognition.continuous = true;
+                this.recognition.interimResults = false;
+                
+                this.recognition.onresult = (event) => {
+                    const last = event.results.length - 1;
+                    const transcript = event.results[last][0].transcript;
+                    const confidence = event.results[last][0].confidence;
+                    
+                    if (confidence > 0.7) {
+                        this.addChatMessage('Te', transcript, true);
+                        // Send to other peers
+                        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                            this.ws.send(JSON.stringify({
+                                type: 'chat-message',
+                                text: transcript,
+                                userId: this.userId
+                            }));
+                        }
+                    }
+                };
+                
+                this.recognition.onerror = (event) => {
+                    console.log('Speech recognition error:', event.error);
+                };
             }
             
             connectWebSocket() {
@@ -118,6 +210,10 @@
                         if (data.transmitting) this.activePeers.add(data.userId);
                         else this.activePeers.delete(data.userId);
                         this.render();
+                        break;
+                    case 'chat-message':
+                        const userName = data.userId.substring(0, 8);
+                        this.addChatMessage(userName, data.text, false);
                         break;
                 }
             }
@@ -188,10 +284,7 @@
             
             playAuthenticCBRogerBeep() {
                 if (!this.rogerBeepEnabled || !this.audioContext) return;
-                
                 const currentTime = this.audioContext.currentTime;
-                
-                // Első tónus: 1750 Hz, 80ms
                 const osc1 = this.audioContext.createOscillator();
                 const gain1 = this.audioContext.createGain();
                 osc1.connect(gain1);
@@ -202,8 +295,6 @@
                 gain1.gain.exponentialRampToValueAtTime(0.01, currentTime + 0.08);
                 osc1.start(currentTime);
                 osc1.stop(currentTime + 0.08);
-                
-                // Második tónus: 1450 Hz, 120ms, 90ms delay
                 const osc2 = this.audioContext.createOscillator();
                 const gain2 = this.audioContext.createGain();
                 osc2.connect(gain2);
@@ -222,6 +313,17 @@
                 this.isTransmitting = true;
                 if (this.localStream) this.localStream.getAudioTracks().forEach(track => track.enabled = true);
                 if (this.ws) this.ws.send(JSON.stringify({ type: 'start-transmission' }));
+                
+                // Start speech recognition if chat enabled
+                if (this.chatEnabled && this.recognition && !this.isRecognizing) {
+                    try {
+                        this.recognition.start();
+                        this.isRecognizing = true;
+                    } catch (e) {
+                        console.log('Recognition already started');
+                    }
+                }
+                
                 this.measureVolume();
                 this.render();
             }
@@ -231,6 +333,15 @@
                 if (this.localStream) this.localStream.getAudioTracks().forEach(track => track.enabled = false);
                 if (this.ws) this.ws.send(JSON.stringify({ type: 'stop-transmission' }));
                 this.volume = 0;
+                
+                // Stop speech recognition
+                if (this.recognition && this.isRecognizing) {
+                    try {
+                        this.recognition.stop();
+                        this.isRecognizing = false;
+                    } catch (e) {}
+                }
+                
                 this.playAuthenticCBRogerBeep();
                 this.render();
             }
@@ -256,6 +367,101 @@
                 this.render();
             }
             
+            toggleChat() {
+                this.chatEnabled = !this.chatEnabled;
+                if (this.chatEnabled) {
+                    this.setupSpeechRecognition();
+                    this.openChatWindow();
+                } else {
+                    if (this.recognition) {
+                        this.recognition.stop();
+                        this.recognition = null;
+                    }
+                    this.closeChatWindow();
+                }
+                this.saveChatSettings();
+                this.render();
+            }
+            
+            openChatWindow() {
+                this.chatWindow.open = true;
+                this.chatWindow.minimized = false;
+                this.renderChatWindow();
+            }
+            
+            closeChatWindow() {
+                this.chatWindow.open = false;
+                this.renderChatWindow();
+            }
+            
+            toggleMinimizeChat() {
+                this.chatWindow.minimized = !this.chatWindow.minimized;
+                this.renderChatWindow();
+            }
+            
+            addChatMessage(sender, text, isMe) {
+                const timestamp = new Date().toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit' });
+                this.chatMessages.push({ sender, text, timestamp, isMe });
+                if (this.chatMessages.length > 50) this.chatMessages.shift();
+                this.saveChatMessages();
+                this.renderChatWindow();
+                setTimeout(() => this.scrollChatToBottom(), 100);
+            }
+            
+            clearChat() {
+                if (confirm('Törölöd a beszélgetés történetet?')) {
+                    this.chatMessages = [];
+                    this.saveChatMessages();
+                    this.renderChatWindow();
+                }
+            }
+            
+            downloadChat() {
+                const content = `CB Rádió - Csatorna ${this.channel}\nDátum: ${new Date().toLocaleDateString('hu-HU')}\n${'─'.repeat(40)}\n\n` +
+                    this.chatMessages.map(m => `[${m.timestamp}] ${m.sender}:\n${m.text}\n`).join('\n') +
+                    `\n${'─'.repeat(40)}\npilotRADAR.hu CB Rádió`;
+                
+                const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `CB-Radio-Ch${this.channel}-${new Date().toISOString().split('T')[0]}.txt`;
+                a.click();
+                URL.revokeObjectURL(url);
+            }
+            
+            scrollChatToBottom() {
+                const messagesEl = document.getElementById('chatMessages');
+                if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+            
+            saveChatSettings() {
+                localStorage.setItem('cbRadioChatEnabled', this.chatEnabled);
+                localStorage.setItem('cbRadioChatWindow', JSON.stringify(this.chatWindow));
+            }
+            
+            loadChatSettings() {
+                const enabled = localStorage.getItem('cbRadioChatEnabled');
+                if (enabled === 'true') {
+                    this.chatEnabled = true;
+                    this.setupSpeechRecognition();
+                }
+                const windowData = localStorage.getItem('cbRadioChatWindow');
+                if (windowData) {
+                    this.chatWindow = { ...this.chatWindow, ...JSON.parse(windowData) };
+                }
+                this.loadChatMessages();
+            }
+            
+            saveChatMessages() {
+                localStorage.setItem('cbRadioChatMessages', JSON.stringify(this.chatMessages));
+            }
+            
+            loadChatMessages() {
+                const messages = localStorage.getItem('cbRadioChatMessages');
+                if (messages) this.chatMessages = JSON.parse(messages);
+            }
+            
             changeChannel(newChannel) {
                 Object.keys(this.peerConnections).forEach(peerId => this.closePeerConnection(peerId));
                 this.peers = [];
@@ -266,7 +472,6 @@
             }
             
             setupEventListeners() {
-                // SPACE billentyű (PC)
                 window.addEventListener('keydown', (e) => {
                     if (!this.spacePressed && e.code === 'Space') {
                         e.preventDefault();
@@ -274,7 +479,6 @@
                         this.startTransmission();
                     }
                 });
-                
                 window.addEventListener('keyup', (e) => {
                     if (this.spacePressed && e.code === 'Space') {
                         e.preventDefault();
@@ -282,6 +486,95 @@
                         this.stopTransmission();
                     }
                 });
+            }
+            
+            setupChatWindowDrag() {
+                const header = document.getElementById('chatHeader');
+                const window = document.getElementById('chatWindowContainer');
+                if (!header || !window) return;
+                
+                let isDragging = false;
+                let currentX, currentY, initialX, initialY;
+                
+                header.addEventListener('mousedown', (e) => {
+                    isDragging = true;
+                    initialX = e.clientX - this.chatWindow.x;
+                    initialY = e.clientY - this.chatWindow.y;
+                });
+                
+                document.addEventListener('mousemove', (e) => {
+                    if (!isDragging) return;
+                    e.preventDefault();
+                    currentX = e.clientX - initialX;
+                    currentY = e.clientY - initialY;
+                    this.chatWindow.x = currentX;
+                    this.chatWindow.y = currentY;
+                    window.style.left = currentX + 'px';
+                    window.style.top = currentY + 'px';
+                });
+                
+                document.addEventListener('mouseup', () => {
+                    if (isDragging) {
+                        isDragging = false;
+                        this.saveChatSettings();
+                    }
+                });
+            }
+            
+            renderChatWindow() {
+                const container = document.getElementById('chatWindow');
+                if (!this.chatWindow.open) {
+                    container.innerHTML = '';
+                    return;
+                }
+                
+                container.innerHTML = `
+                    <div id="chatWindowContainer" class="chat-window ${this.chatWindow.minimized ? 'minimized' : ''}" 
+                         style="left: ${this.chatWindow.x}px; top: ${this.chatWindow.y}px; width: ${this.chatWindow.width}px; height: ${this.chatWindow.height}px;">
+                        <div id="chatHeader" class="chat-header bg-gradient-to-r from-yellow-400 to-yellow-500 px-4 py-2 flex items-center justify-between rounded-t-lg">
+                            <span class="text-gray-900 font-bold text-sm">💬 Beszélgetés - Ch ${this.channel}</span>
+                            <div class="flex gap-2">
+                                <button id="minimizeChat" class="text-gray-900 hover:text-gray-700 font-bold">─</button>
+                                <button id="closeChat" class="text-gray-900 hover:text-red-600 font-bold">✕</button>
+                            </div>
+                        </div>
+                        ${!this.chatWindow.minimized ? `
+                            <div id="chatMessages" class="chat-messages p-3 space-y-2" style="height: ${this.chatWindow.height - 110}px;">
+                                ${this.chatMessages.length === 0 ? `
+                                    <div class="text-center text-gray-500 text-sm mt-8">
+                                        <p>📝 Nincs üzenet</p>
+                                        <p class="text-xs mt-2">Nyomd meg a PTT gombot és beszélj!</p>
+                                    </div>
+                                ` : this.chatMessages.map(m => `
+                                    <div class="message-bubble ${m.isMe ? 'text-right' : 'text-left'}">
+                                        <div class="inline-block max-w-[80%] ${m.isMe ? 'bg-green-700' : 'bg-gray-700'} rounded-lg px-3 py-2">
+                                            <div class="text-xs text-gray-300 mb-1">
+                                                ${m.isMe ? '🎤' : '📻'} ${m.sender} • ${m.timestamp}
+                                            </div>
+                                            <div class="text-white text-sm">${m.text}</div>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                            <div class="px-3 py-2 bg-gray-800 rounded-b-lg flex gap-2">
+                                <button id="downloadChat" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm font-semibold">
+                                    💾 Mentés
+                                </button>
+                                <button id="clearChat" class="flex-1 bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded text-sm font-semibold">
+                                    🗑️ Törlés
+                                </button>
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+                
+                setTimeout(() => {
+                    document.getElementById('closeChat')?.addEventListener('click', () => this.closeChatWindow());
+                    document.getElementById('minimizeChat')?.addEventListener('click', () => this.toggleMinimizeChat());
+                    document.getElementById('downloadChat')?.addEventListener('click', () => this.downloadChat());
+                    document.getElementById('clearChat')?.addEventListener('click', () => this.clearChat());
+                    this.setupChatWindowDrag();
+                }, 0);
             }
             
             render() {
@@ -335,7 +628,6 @@
                                         </div>
                                     </div>
                                     
-                                    <!-- ROGER BEEP + HANG BE/KI egymás mellett -->
                                     <div class="grid grid-cols-2 gap-3">
                                         <button id="rogerBtn" class="px-4 py-3 rounded-lg font-semibold text-sm ${this.rogerBeepEnabled ? 'bg-green-600' : 'bg-gray-700'} text-white">
                                             ${this.rogerBeepEnabled ? '🔔 BEEP: BE' : '🔕 BEEP: KI'}
@@ -345,7 +637,10 @@
                                         </button>
                                     </div>
                                     
-                                    <!-- NAGY PTT GOMB -->
+                                    <button id="chatBtn" class="w-full px-4 py-3 rounded-lg font-semibold text-sm ${this.chatEnabled ? 'bg-blue-600' : 'bg-gray-700'} text-white">
+                                        ${this.chatEnabled ? '📝 SZÖVEG: BE' : '📝 SZÖVEG: KI'}
+                                    </button>
+                                    
                                     <button id="pttBtn" class="w-full py-12 rounded-2xl font-bold text-2xl shadow-2xl select-none active:scale-95 transition-all ${
                                         this.isTransmitting ? 'bg-gradient-to-b from-red-500 to-red-700 shadow-red-500/50' :
                                         this.isConnected && !this.isMuted ? 'bg-gradient-to-b from-green-500 to-green-700 shadow-green-500/50 hover:shadow-green-500/70' :
@@ -369,6 +664,7 @@
                 
                 document.getElementById('muteBtn')?.addEventListener('click', () => this.toggleMute());
                 document.getElementById('rogerBtn')?.addEventListener('click', () => this.toggleRogerBeep());
+                document.getElementById('chatBtn')?.addEventListener('click', () => this.toggleChat());
                 document.getElementById('channelDown')?.addEventListener('click', () => this.changeChannel(Math.max(1, this.channel - 1)));
                 document.getElementById('channelUp')?.addEventListener('click', () => this.changeChannel(Math.min(40, this.channel + 1)));
                 document.getElementById('channelSlider')?.addEventListener('input', (e) => this.changeChannel(parseInt(e.target.value)));
