@@ -133,21 +133,36 @@
             
             setupSpeechRecognition() {
                 if (!('webkitSpeechRecognition' in window)) {
-                    console.log('Speech recognition not supported');
+                    console.log('❌ Speech recognition NOT supported in this browser');
+                    alert('A beszédfelismerés nem támogatott ebben a böngészőben. Használj Chrome-ot vagy Edge-et!');
                     return;
                 }
+                
+                console.log('✅ Speech Recognition inicializálva');
                 
                 this.recognition = new webkitSpeechRecognition();
                 this.recognition.lang = 'hu-HU';
                 this.recognition.continuous = true;
                 this.recognition.interimResults = false;
                 
+                this.recognition.onstart = () => {
+                    console.log('🎤 Speech Recognition ELINDULT');
+                };
+                
+                this.recognition.onend = () => {
+                    console.log('🔇 Speech Recognition LEÁLLT');
+                    this.isRecognizing = false;
+                };
+                
                 this.recognition.onresult = (event) => {
                     const last = event.results.length - 1;
                     const transcript = event.results[last][0].transcript;
                     const confidence = event.results[last][0].confidence;
                     
+                    console.log(`📝 Felismert szöveg: "${transcript}" (${Math.round(confidence * 100)}% bizonyosság)`);
+                    
                     if (confidence > 0.7) {
+                        console.log('✅ Elfogadva (70% felett)');
                         this.addChatMessage('Te', transcript, true);
                         // Send to other peers
                         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -157,11 +172,20 @@
                                 userId: this.userId
                             }));
                         }
+                    } else {
+                        console.log(`❌ Elutasítva (${Math.round(confidence * 100)}% < 70%)`);
                     }
                 };
                 
                 this.recognition.onerror = (event) => {
-                    console.log('Speech recognition error:', event.error);
+                    console.error('❌ Speech recognition HIBA:', event.error);
+                    if (event.error === 'not-allowed') {
+                        alert('Mikrofon engedély megtagadva! Engedélyezd a mikrofont a beszédfelismeréshez!');
+                    } else if (event.error === 'network') {
+                        console.log('⚠️ Hálózati hiba - ellenőrizd az internet kapcsolatot');
+                    } else if (event.error === 'no-speech') {
+                        console.log('🔇 Nem hallott beszédet');
+                    }
                 };
             }
             
@@ -316,12 +340,18 @@
                 
                 // Start speech recognition if chat enabled
                 if (this.chatEnabled && this.recognition && !this.isRecognizing) {
+                    console.log('🎤 PTT megnyomva - Speech Recognition indítása...');
                     try {
                         this.recognition.start();
                         this.isRecognizing = true;
+                        console.log('✅ Recognition.start() meghívva');
                     } catch (e) {
-                        console.log('Recognition already started');
+                        console.log('⚠️ Recognition már fut:', e.message);
                     }
+                } else if (this.chatEnabled && !this.recognition) {
+                    console.log('❌ HIBA: Chat engedélyezve de recognition objektum nincs!');
+                } else if (!this.chatEnabled) {
+                    console.log('ℹ️ Chat nincs engedélyezve - nincs szövegfelismerés');
                 }
                 
                 this.measureVolume();
@@ -369,6 +399,8 @@
             
             toggleChat() {
                 this.chatEnabled = !this.chatEnabled;
+                console.log(`📝 Chat ${this.chatEnabled ? 'BEKAPCSOLVA' : 'KIKAPCSOLVA'}`);
+                
                 if (this.chatEnabled) {
                     this.setupSpeechRecognition();
                     this.openChatWindow();
@@ -376,6 +408,7 @@
                     if (this.recognition) {
                         this.recognition.stop();
                         this.recognition = null;
+                        console.log('🔇 Speech Recognition leállítva');
                     }
                     this.closeChatWindow();
                 }
