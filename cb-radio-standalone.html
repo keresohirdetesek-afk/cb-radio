@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CB Rádió v3.2</title>
+    <title>CB Rádió - pilotRADAR.hu</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-900">
@@ -28,7 +28,6 @@
                 this.peers = [];
                 this.activePeers = new Set();
                 this.volume = 0;
-                this.outputVolume = 100;
                 this.rogerBeepEnabled = true;
                 this.localStream = null;
                 this.peerConnections = {};
@@ -183,14 +182,8 @@
                     document.body.appendChild(audioElement);
                 }
                 audioElement.srcObject = stream;
-                audioElement.volume = this.outputVolume / 100;
+                audioElement.volume = 1.0;
                 audioElement.play().catch(() => {});
-            }
-            
-            updateAllAudioVolumes() {
-                document.querySelectorAll('audio[id^="audio-"]').forEach(audio => {
-                    audio.volume = this.outputVolume / 100;
-                });
             }
             
             playAuthenticCBRogerBeep() {
@@ -263,12 +256,6 @@
                 this.render();
             }
             
-            setOutputVolume(value) {
-                this.outputVolume = value;
-                this.updateAllAudioVolumes();
-                this.render();
-            }
-            
             changeChannel(newChannel) {
                 Object.keys(this.peerConnections).forEach(peerId => this.closePeerConnection(peerId));
                 this.peers = [];
@@ -302,11 +289,16 @@
                     <div class="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black flex items-center justify-center p-4">
                         <div class="w-full max-w-md">
                             <div class="bg-gradient-to-b from-gray-800 to-gray-900 rounded-3xl shadow-2xl border-4 border-gray-700">
-                                <div class="bg-gradient-to-r from-orange-600 to-red-600 px-6 py-3 flex items-center justify-between">
-                                    <span class="text-white font-bold text-lg">📻 CB RÁDIÓ v3.2</span>
-                                    <span class="text-xs font-semibold ${this.isConnected ? 'text-green-400' : 'text-red-400'}">
-                                        ${this.isConnected ? '● ONLINE' : '○ OFFLINE'}
-                                    </span>
+                                <div class="px-6 py-3" style="background: linear-gradient(135deg, #fef08a 0%, #fde047 100%);">
+                                    <div class="flex items-center justify-between mb-1">
+                                        <span class="text-gray-900 font-bold text-lg">📻 CB RÁDIÓ</span>
+                                        <span class="text-xs font-semibold ${this.isConnected ? 'text-green-600' : 'text-red-600'}">
+                                            ${this.isConnected ? '● ONLINE' : '○ OFFLINE'}
+                                        </span>
+                                    </div>
+                                    <div class="text-center">
+                                        <span class="font-bold" style="color: #dc2626;">pilot</span><span class="font-bold text-black">RADAR</span><span class="text-black text-sm">.hu</span>
+                                    </div>
                                 </div>
                                 <div class="bg-gradient-to-b from-green-900 to-green-950 p-6 border-y-4 border-gray-700">
                                     <div class="bg-black rounded-lg p-4">
@@ -334,14 +326,6 @@
                                     </div>
                                 </div>
                                 <div class="p-6 bg-gray-800 space-y-4">
-                                    <div class="bg-gray-700 rounded-lg p-4">
-                                        <label class="text-white text-sm font-semibold mb-2 flex items-center justify-between">
-                                            <span>🔊 Hangerő</span>
-                                            <span class="text-green-400 font-mono">${this.outputVolume}%</span>
-                                        </label>
-                                        <input type="range" id="volumeSlider" min="0" max="100" value="${this.outputVolume}" 
-                                            class="w-full h-2 bg-gray-600 rounded-lg cursor-pointer">
-                                    </div>
                                     <div>
                                         <label class="text-gray-300 text-sm font-semibold mb-2 block">Csatorna (1-40)</label>
                                         <div class="flex gap-2">
@@ -369,12 +353,6 @@
                                     } text-white" ${!this.isConnected || this.isMuted ? 'disabled' : ''}>
                                         ${this.isTransmitting ? '🎤 ADÁS...' : '🎤 NYOMD ÉS BESZÉLJ'}
                                     </button>
-                                    
-                                    <div class="bg-blue-900 bg-opacity-30 border border-blue-700 rounded-lg p-3">
-                                        <p class="text-blue-300 text-xs text-center font-semibold mb-1">💡 GYORSBILLENTYŰ</p>
-                                        <p class="text-blue-200 text-xs text-center">⌨️ SPACE = PTT (számítógép)</p>
-                                        <p class="text-blue-200 text-xs text-center">📱 Koppints a zöld gombra (mobil)</p>
-                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -394,7 +372,6 @@
                 document.getElementById('channelDown')?.addEventListener('click', () => this.changeChannel(Math.max(1, this.channel - 1)));
                 document.getElementById('channelUp')?.addEventListener('click', () => this.changeChannel(Math.min(40, this.channel + 1)));
                 document.getElementById('channelSlider')?.addEventListener('input', (e) => this.changeChannel(parseInt(e.target.value)));
-                document.getElementById('volumeSlider')?.addEventListener('input', (e) => this.setOutputVolume(parseInt(e.target.value)));
             }
         }
         
