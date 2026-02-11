@@ -1,63 +1,361 @@
-mt-4 text-center"><div class="text-green-400 font-mono text-xs animate-pulse">KÉSZENLÉTI</div></div>
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CB Rádió v3.0 - Enhanced</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900">
+    <div id="app"></div>
+    <script>
+        const WS_SERVER = 'wss://cb-radio-production.up.railway.app';
+        
+        const ICE_SERVERS = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' }
+            ]
+        };
+
+        class CBRadio {
+            constructor() {
+                this.channel = 19;
+                this.isTransmitting = false;
+                this.isMuted = false;
+                this.isConnected = false;
+                this.peers = [];
+                this.activePeers = new Set();
+                this.volume = 0;
+                this.outputVolume = 100;
+                this.rogerBeepEnabled = true;
+                this.localStream = null;
+                this.peerConnections = {};
+                this.ws = null;
+                this.audioContext = null;
+                this.analyser = null;
+                this.userId = null;
+                this.volumeUpPressed = false;
+                
+                window.addEventListener('beforeunload', () => this.cleanup());
+                this.init();
+            }
+            
+            cleanup() {
+                Object.values(this.peerConnections).forEach(pc => pc && pc.close());
+                if (this.ws) this.ws.close();
+                if (this.localStream) this.localStream.getTracks().forEach(t => t.stop());
+                if (this.audioContext) this.audioContext.close();
+            }
+            
+            async init() {
+                await this.setupAudio();
+                this.connectWebSocket();
+                this.setupEventListeners();
+                this.render();
+            }
+            
+            async setupAudio() {
+                try {
+                    this.localStream = await navigator.mediaDevices.getUserMedia({
+                        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+                    });
+                    this.localStream.getAudioTracks().forEach(track => track.enabled = false);
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    this.analyser = this.audioContext.createAnalyser();
+                    const source = this.audioContext.createMediaStreamSource(this.localStream);
+                    source.connect(this.analyser);
+                    this.analyser.fftSize = 256;
+                    this.isConnected = true;
+                    this.render();
+                } catch (error) {
+                    alert('Kérlek engedélyezd a mikrofon hozzáférést!');
+                }
+            }
+            
+            connectWebSocket() {
+                this.ws = new WebSocket(WS_SERVER);
+                this.ws.onopen = () => {
+                    this.isConnected = true;
+                    this.joinChannel(this.channel);
+                    this.render();
+                };
+                this.ws.onmessage = (event) => this.handleWebSocketMessage(JSON.parse(event.data));
+                this.ws.onclose = () => {
+                    this.isConnected = false;
+                    this.render();
+                    setTimeout(() => this.connectWebSocket(), 3000);
+                };
+            }
+            
+            async handleWebSocketMessage(data) {
+                switch (data.type) {
+                    case 'channel-joined':
+                        this.userId = data.userId;
+                        this.peers = data.peers;
+                        for (const peerId of data.peers) await this.createPeerConnection(peerId, true);
+                        this.render();
+                        break;
+                    case 'peer-joined':
+                        if (!this.peers.includes(data.userId)) this.peers.push(data.userId);
+                        this.render();
+                        break;
+                    case 'peer-left':
+                        this.peers = this.peers.filter(id => id !== data.userId);
+                        this.closePeerConnection(data.userId);
+                        this.render();
+                        break;
+                    case 'offer':
+                        await this.handleOffer(data);
+                        break;
+                    case 'answer':
+                        await this.handleAnswer(data);
+                        break;
+                    case 'ice-candidate':
+                        await this.handleIceCandidate(data);
+                        break;
+                    case 'peer-transmitting':
+                        if (data.transmitting) this.activePeers.add(data.userId);
+                        else this.activePeers.delete(data.userId);
+                        this.render();
+                        break;
+                }
+            }
+            
+            joinChannel(channelId) {
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify({ type: 'join-channel', channel: channelId }));
+                }
+            }
+            
+            async createPeerConnection(peerId, initiator = false) {
+                if (this.peerConnections[peerId]) this.peerConnections[peerId].close();
+                const pc = new RTCPeerConnection(ICE_SERVERS);
+                this.peerConnections[peerId] = pc;
+                if (this.localStream) this.localStream.getTracks().forEach(track => pc.addTrack(track, this.localStream));
+                pc.ontrack = (event) => this.playRemoteAudio(event.streams[0], peerId);
+                pc.onicecandidate = (event) => {
+                    if (event.candidate && this.ws) {
+                        this.ws.send(JSON.stringify({ type: 'ice-candidate', candidate: event.candidate, to: peerId }));
+                    }
+                };
+                if (initiator) {
+                    const offer = await pc.createOffer();
+                    await pc.setLocalDescription(offer);
+                    if (this.ws) this.ws.send(JSON.stringify({ type: 'offer', offer: pc.localDescription, to: peerId }));
+                }
+                return pc;
+            }
+            
+            async handleOffer(data) {
+                const pc = await this.createPeerConnection(data.from);
+                await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                if (this.ws) this.ws.send(JSON.stringify({ type: 'answer', answer: pc.localDescription, to: data.from }));
+            }
+            
+            async handleAnswer(data) {
+                const pc = this.peerConnections[data.from];
+                if (pc && pc.signalingState !== 'stable') await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+            }
+            
+            async handleIceCandidate(data) {
+                const pc = this.peerConnections[data.from];
+                if (pc && pc.remoteDescription) await pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(() => {});
+            }
+            
+            closePeerConnection(peerId) {
+                if (this.peerConnections[peerId]) this.peerConnections[peerId].close();
+                delete this.peerConnections[peerId];
+                const audioEl = document.getElementById(`audio-${peerId}`);
+                if (audioEl) audioEl.remove();
+            }
+            
+            playRemoteAudio(stream, peerId) {
+                let audioElement = document.getElementById(`audio-${peerId}`);
+                if (!audioElement) {
+                    audioElement = document.createElement('audio');
+                    audioElement.id = `audio-${peerId}`;
+                    audioElement.autoplay = true;
+                    audioElement.playsInline = true;
+                    document.body.appendChild(audioElement);
+                }
+                audioElement.srcObject = stream;
+                audioElement.volume = this.outputVolume / 100;
+                audioElement.play().catch(() => {});
+            }
+            
+            updateAllAudioVolumes() {
+                document.querySelectorAll('audio[id^="audio-"]').forEach(audio => {
+                    audio.volume = this.outputVolume / 100;
+                });
+            }
+            
+            playRogerBeep() {
+                if (!this.rogerBeepEnabled || !this.audioContext) return;
+                const oscillator = this.audioContext.createOscillator();
+                const gainNode = this.audioContext.createGain();
+                oscillator.connect(gainNode);
+                gainNode.connect(this.audioContext.destination);
+                oscillator.frequency.value = 1000;
+                oscillator.type = 'sine';
+                gainNode.gain.setValueAtTime(0.3, this.audioContext.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, this.audioContext.currentTime + 0.15);
+                oscillator.start(this.audioContext.currentTime);
+                oscillator.stop(this.audioContext.currentTime + 0.15);
+            }
+            
+            startTransmission() {
+                if (!this.isConnected || this.isMuted) return;
+                this.isTransmitting = true;
+                if (this.localStream) this.localStream.getAudioTracks().forEach(track => track.enabled = true);
+                if (this.ws) this.ws.send(JSON.stringify({ type: 'start-transmission' }));
+                this.measureVolume();
+                this.render();
+            }
+            
+            stopTransmission() {
+                this.isTransmitting = false;
+                if (this.localStream) this.localStream.getAudioTracks().forEach(track => track.enabled = false);
+                if (this.ws) this.ws.send(JSON.stringify({ type: 'stop-transmission' }));
+                this.volume = 0;
+                this.playRogerBeep();
+                this.render();
+            }
+            
+            measureVolume() {
+                if (!this.analyser || !this.isTransmitting) return;
+                const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+                this.analyser.getByteFrequencyData(dataArray);
+                const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+                this.volume = Math.min(100, (average / 255) * 100);
+                this.render();
+                if (this.isTransmitting) requestAnimationFrame(() => this.measureVolume());
+            }
+            
+            toggleMute() {
+                this.isMuted = !this.isMuted;
+                if (this.isTransmitting) this.stopTransmission();
+                this.render();
+            }
+            
+            toggleRogerBeep() {
+                this.rogerBeepEnabled = !this.rogerBeepEnabled;
+                this.render();
+            }
+            
+            setOutputVolume(value) {
+                this.outputVolume = value;
+                this.updateAllAudioVolumes();
+                this.render();
+            }
+            
+            changeChannel(newChannel) {
+                Object.keys(this.peerConnections).forEach(peerId => this.closePeerConnection(peerId));
+                this.peers = [];
+                this.activePeers.clear();
+                this.channel = newChannel;
+                this.joinChannel(newChannel);
+                this.render();
+            }
+            
+            setupEventListeners() {
+                window.addEventListener('keydown', (e) => {
+                    if (!this.volumeUpPressed && (e.key === 'AudioVolumeUp' || e.keyCode === 175 || e.code === 'Space')) {
+                        e.preventDefault();
+                        this.volumeUpPressed = true;
+                        this.startTransmission();
+                    }
+                });
+                
+                window.addEventListener('keyup', (e) => {
+                    if (this.volumeUpPressed && (e.key === 'AudioVolumeUp' || e.keyCode === 175 || e.code === 'Space')) {
+                        e.preventDefault();
+                        this.volumeUpPressed = false;
+                        this.stopTransmission();
+                    }
+                });
+            }
+            
+            render() {
+                document.getElementById('app').innerHTML = `
+                    <div class="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black flex items-center justify-center p-4">
+                        <div class="w-full max-w-md">
+                            <div class="bg-gradient-to-b from-gray-800 to-gray-900 rounded-3xl shadow-2xl border-4 border-gray-700">
+                                <div class="bg-gradient-to-r from-orange-600 to-red-600 px-6 py-3 flex items-center justify-between">
+                                    <span class="text-white font-bold text-lg">📻 CB RÁDIÓ v3.0</span>
+                                    <span class="text-xs font-semibold ${this.isConnected ? 'text-green-400' : 'text-red-400'}">
+                                        ${this.isConnected ? '● ONLINE' : '○ OFFLINE'}
+                                    </span>
+                                </div>
+                                <div class="bg-gradient-to-b from-green-900 to-green-950 p-6 border-y-4 border-gray-700">
+                                    <div class="bg-black rounded-lg p-4">
+                                        <div class="text-center mb-4">
+                                            <div class="text-green-400 font-mono text-sm mb-1">CSATORNA</div>
+                                            <div class="text-green-400 font-mono text-6xl font-bold">${String(this.channel).padStart(2, '0')}</div>
+                                            <div class="text-green-400 font-mono text-xs mt-2">👥 ${this.peers.length} FELHASZNÁLÓ</div>
+                                        </div>
+                                        ${this.isTransmitting ? `
+                                            <div class="mt-4">
+                                                <div class="text-green-400 font-mono text-xs mb-2 text-center">ADÁS</div>
+                                                <div class="h-3 bg-gray-900 rounded-full border border-green-800">
+                                                    <div class="h-full bg-gradient-to-r from-green-600 to-green-400" style="width: ${this.volume}%"></div>
+                                                </div>
+                                            </div>
+                                        ` : this.activePeers.size > 0 ? `
+                                            <div class="mt-4 text-center">
+                                                <div class="text-yellow-400 font-mono text-xs animate-pulse">VÉTEL...</div>
+                                            </div>
+                                        ` : `
+                                            <div class="mt-4 text-center">
+                                                <div class="text-green-400 font-mono text-xs animate-pulse">KÉSZENLÉTI</div>
+                                            </div>
                                         `}
                                     </div>
                                 </div>
                                 <div class="p-6 bg-gray-800 space-y-4">
-                                    <!-- Hangerő szabályzó -->
                                     <div class="bg-gray-700 rounded-lg p-4">
-                                        <label class="text-white text-sm font-semibold mb-2 block flex items-center justify-between">
+                                        <label class="text-white text-sm font-semibold mb-2 flex items-center justify-between">
                                             <span>🔊 Hangerő</span>
                                             <span class="text-green-400 font-mono">${this.outputVolume}%</span>
                                         </label>
                                         <input type="range" id="volumeSlider" min="0" max="100" value="${this.outputVolume}" 
-                                            class="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-green-500">
+                                            class="w-full h-2 bg-gray-600 rounded-lg cursor-pointer">
                                     </div>
-                                    
-                                    <!-- Csatorna -->
                                     <div>
                                         <label class="text-gray-300 text-sm font-semibold mb-2 block">Csatorna (1-40)</label>
                                         <div class="flex gap-2">
-                                            <button id="channelDown" class="bg-gray-700 hover:bg-gray-600 text-white px-4 py-3 rounded-lg font-bold text-xl">◀</button>
+                                            <button id="channelDown" class="bg-gray-700 hover:bg-gray-600 text-white px-4 py-3 rounded-lg font-bold">◀</button>
                                             <input type="range" id="channelSlider" min="1" max="40" value="${this.channel}" class="flex-1">
-                                            <button id="channelUp" class="bg-gray-700 hover:bg-gray-600 text-white px-4 py-3 rounded-lg font-bold text-xl">▶</button>
+                                            <button id="channelUp" class="bg-gray-700 hover:bg-gray-600 text-white px-4 py-3 rounded-lg font-bold">▶</button>
                                         </div>
                                     </div>
-                                    
-                                    <!-- Roger Beep kapcsoló -->
                                     <button id="rogerBtn" class="w-full px-6 py-3 rounded-lg font-semibold ${this.rogerBeepEnabled ? 'bg-green-600' : 'bg-gray-700'} text-white">
                                         ${this.rogerBeepEnabled ? '🔔 ROGER BEEP: BE' : '🔕 ROGER BEEP: KI'}
                                     </button>
-                                    
-                                    <!-- Némítás -->
                                     <button id="muteBtn" class="w-full px-6 py-3 rounded-lg font-semibold ${this.isMuted ? 'bg-red-600' : 'bg-gray-700'} text-white">
                                         ${this.isMuted ? '🔇 NÉMÍTVA' : '🔊 HANG BE'}
                                     </button>
-                                    
-                                    <!-- PTT gomb -->
-                                    <button id="pttBtn" class="w-full py-8 rounded-2xl font-bold text-xl shadow-lg select-none ${
-                                        this.isTransmitting ? 'bg-gradient-to-b from-red-500 to-red-700 scale-95' :
-                                        this.isConnected && !this.isMuted ? 'bg-gradient-to-b from-green-500 to-green-700 hover:scale-105' :
-                                        'bg-gray-600 cursor-not-allowed'
-                                    } text-white transition-transform" ${!this.isConnected || this.isMuted ? 'disabled' : ''}>
+                                    <button id="pttBtn" class="w-full py-8 rounded-2xl font-bold text-xl ${
+                                        this.isTransmitting ? 'bg-gradient-to-b from-red-500 to-red-700' :
+                                        this.isConnected && !this.isMuted ? 'bg-gradient-to-b from-green-500 to-green-700' :
+                                        'bg-gray-600'
+                                    } text-white">
                                         ${this.isTransmitting ? '🎤 ADÁS...' : '🔇 NYOMD ÉS BESZÉLJ'}
                                     </button>
-                                    
-                                    <!-- Útmutató -->
                                     <div class="bg-blue-900 bg-opacity-30 border border-blue-700 rounded-lg p-3">
                                         <p class="text-blue-300 text-xs text-center font-semibold mb-1">💡 GYORSBILLENTYŰK</p>
-                                        <p class="text-blue-200 text-xs text-center">📱 Hangerő FEL gomb = PTT</p>
-                                        <p class="text-blue-200 text-xs text-center">⌨️ Szóköz = PTT (PC)</p>
+                                        <p class="text-blue-200 text-xs text-center">📱 Hangerő FEL = PTT</p>
+                                        <p class="text-blue-200 text-xs text-center">⌨️ Szóköz = PTT</p>
                                     </div>
-                                </div>
-                                <div class="bg-gray-900 px-6 py-3 border-t-2 border-gray-700">
-                                    <p class="text-gray-400 text-xs text-center">${this.isConnected ? `Csatorna ${this.channel} • ${this.rogerBeepEnabled ? '🔔' : '🔕'}` : 'Mikrofon szükséges'}</p>
                                 </div>
                             </div>
                         </div>
                     </div>
                 `;
                 
-                // Event listeners
                 const pttBtn = document.getElementById('pttBtn');
                 if (pttBtn) {
                     pttBtn.addEventListener('mousedown', () => this.startTransmission());
@@ -75,7 +373,7 @@ mt-4 text-center"><div class="text-green-400 font-mono text-xs animate-pulse">K�
             }
         }
         
-        window.cbRadio = new CBRadio();
+        new CBRadio();
     </script>
 </body>
 </html>
