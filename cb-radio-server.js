@@ -93,15 +93,12 @@ wss.on('connection', (ws) => {
       userId,
       peers
     }));
-
-// Értesítés a többieknek az új felhasználóról
-broadcastToChannel(channelId, {
-  type: 'peer-joined',
-  userId
-}, userId);
-
-
-
+    
+    // Értesítés a többieknek az új felhasználóról
+    broadcastToChannel(channelId, {
+      type: 'peer-joined',
+      userId
+    }, userId);
     
     console.log(`${userId} csatlakozott a ${channelId}. csatornához`);
   }
