@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CB Rádió v2.0 - Jelszavas Csatornák</title>
+    <title>CB Rádió v2.0 - Stabil</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-900">
@@ -22,8 +22,6 @@
         class CBRadio {
             constructor() {
                 this.channel = 19;
-                this.channelPassword = null;
-                this.isPrivateChannel = false;
                 this.isTransmitting = false;
                 this.isMuted = false;
                 this.isConnected = false;
@@ -36,12 +34,28 @@
                 this.audioContext = null;
                 this.analyser = null;
                 this.userId = null;
+                this.reconnectAttempts = 0;
+                this.maxReconnectAttempts = 999;
+                this.keepAliveInterval = null;
+                this.reconnectTimeout = null;
                 
                 window.addEventListener('beforeunload', () => this.cleanup());
+                
+                // Tab visibility handling
+                document.addEventListener('visibilitychange', () => {
+                    if (!document.hidden && this.ws?.readyState !== WebSocket.OPEN) {
+                        console.log('Tab visible, reconnecting...');
+                        this.connectWebSocket();
+                    }
+                });
+                
                 this.init();
             }
             
             cleanup() {
+                console.log('🧹 Cleanup...');
+                if (this.keepAliveInterval) clearInterval(this.keepAliveInterval);
+                if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
                 Object.values(this.peerConnections).forEach(pc => pc && pc.close());
                 if (this.ws) this.ws.close();
                 if (this.localStream) this.localStream.getTracks().forEach(t => t.stop());
@@ -55,48 +69,95 @@
                 this.render();
             }
             
-        async setupAudio() {
-    try {
-        // KÉNYSZERÍTJÜK a mikrofon engedélyt
-        console.log('🎤 Mikrofon engedély kérése...');
-        
-        this.localStream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-                // Mobil specifikus beállítások
-                sampleRate: 48000,
-                channelCount: 1
-            }
-        });
-        
-        console.log('✅ Mikrofon engedélyezve:', this.localStream.getAudioTracks()[0].label);
+            async setupAudio() {
+                try {
+                    console.log('🎤 Mikrofon engedély kérése...');
+                    this.localStream = await navigator.mediaDevices.getUserMedia({
+                        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+                    });
+                    console.log('✅ Mikrofon engedélyezve:', this.localStream.getAudioTracks()[0].label);
                     this.localStream.getAudioTracks().forEach(track => track.enabled = false);
                     this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
                     this.analyser = this.audioContext.createAnalyser();
                     const source = this.audioContext.createMediaStreamSource(this.localStream);
                     source.connect(this.analyser);
                     this.analyser.fftSize = 256;
-                    this.isConnected = true;
                     this.render();
                 } catch (error) {
+                    console.error('❌ Mikrofon hiba:', error);
                     alert('Kérlek engedélyezd a mikrofon hozzáférést!');
                 }
             }
             
             connectWebSocket() {
+                if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) {
+                    console.log('⚠️ WebSocket már csatlakozik/csatlakozott');
+                    return;
+                }
+                
+                console.log(`🔌 WebSocket csatlakozás... (kísérlet: ${this.reconnectAttempts + 1})`);
                 this.ws = new WebSocket(WS_SERVER);
+                
                 this.ws.onopen = () => {
                     console.log('✅ WebSocket connected');
-                    this.joinChannel(this.channel, this.channelPassword);
-                };
-                this.ws.onmessage = (event) => this.handleWebSocketMessage(JSON.parse(event.data));
-                this.ws.onclose = () => {
-                    this.isConnected = false;
+                    this.isConnected = true;
+                    this.reconnectAttempts = 0;
+                    this.joinChannel(this.channel);
+                    this.startKeepAlive();
                     this.render();
-                    setTimeout(() => this.connectWebSocket(), 3000);
                 };
+                
+                this.ws.onmessage = (event) => this.handleWebSocketMessage(JSON.parse(event.data));
+                
+                this.ws.onclose = (event) => {
+                    console.log(`🔴 WebSocket closed (code: ${event.code}, reason: ${event.reason})`);
+                    this.isConnected = false;
+                    this.stopKeepAlive();
+                    this.render();
+                    this.scheduleReconnect();
+                };
+                
+                this.ws.onerror = (error) => {
+                    console.error('❌ WebSocket error:', error);
+                };
+            }
+            
+            startKeepAlive() {
+                this.stopKeepAlive();
+                console.log('💓 Keep-alive started');
+                this.keepAliveInterval = setInterval(() => {
+                    if (this.ws?.readyState === WebSocket.OPEN) {
+                        this.ws.send(JSON.stringify({ type: 'ping' }));
+                        console.log('📡 Ping sent');
+                    } else {
+                        console.log('⚠️ WebSocket not open, reconnecting...');
+                        this.connectWebSocket();
+                    }
+                }, 25000); // 25 másodpercenként
+            }
+            
+            stopKeepAlive() {
+                if (this.keepAliveInterval) {
+                    clearInterval(this.keepAliveInterval);
+                    this.keepAliveInterval = null;
+                    console.log('💔 Keep-alive stopped');
+                }
+            }
+            
+            scheduleReconnect() {
+                if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+                    console.error('❌ Max reconnect attempts reached');
+                    return;
+                }
+                
+                const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+                console.log(`⏳ Reconnect in ${delay}ms...`);
+                
+                if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
+                this.reconnectTimeout = setTimeout(() => {
+                    this.reconnectAttempts++;
+                    this.connectWebSocket();
+                }, delay);
             }
             
             async handleWebSocketMessage(data) {
@@ -104,15 +165,17 @@
                     case 'channel-joined':
                         this.userId = data.userId;
                         this.peers = data.peers;
-                        this.isPrivateChannel = data.isPrivate;
+                        console.log(`📻 Joined channel ${data.channelId}, peers: ${data.peers.length}`);
                         for (const peerId of data.peers) await this.createPeerConnection(peerId, true);
                         this.render();
                         break;
                     case 'peer-joined':
+                        console.log(`👤 Peer joined: ${data.userId}`);
                         if (!this.peers.includes(data.userId)) this.peers.push(data.userId);
                         this.render();
                         break;
                     case 'peer-left':
+                        console.log(`👋 Peer left: ${data.userId}`);
                         this.peers = this.peers.filter(id => id !== data.userId);
                         this.closePeerConnection(data.userId);
                         this.render();
@@ -131,58 +194,19 @@
                         else this.activePeers.delete(data.userId);
                         this.render();
                         break;
-                    case 'error':
-                        alert('❌ ' + data.message);
-                        if (data.errorCode === 'WRONG_PASSWORD') {
-                            this.showPasswordPrompt();
-                        }
-                        break;
-                    case 'channel-created':
-                        alert('✅ Privát csatorna létrehozva: ' + data.channelId);
-                        break;
                 }
             }
             
-            joinChannel(channelId, password = null) {
+            joinChannel(channelId) {
                 if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.send(JSON.stringify({ 
-                        type: 'join-channel', 
-                        channel: channelId,
-                        password: password 
-                    }));
-                }
-            }
-            
-            createPrivateChannel(channelId, password) {
-                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.send(JSON.stringify({ 
-                        type: 'create-private-channel', 
-                        channel: channelId,
-                        password: password 
-                    }));
-                }
-            }
-            
-            showPasswordPrompt() {
-                const password = prompt('🔒 Ez egy privát csatorna. Add meg a jelszót:');
-                if (password) {
-                    this.channelPassword = password;
-                    this.joinChannel(this.channel, password);
-                }
-            }
-            
-            showCreatePrivateChannelPrompt() {
-                const password = prompt('🔒 Új privát csatorna jelszava:');
-                if (password && password.length >= 4) {
-                    this.channelPassword = password;
-                    this.createPrivateChannel(this.channel, password);
-                } else if (password) {
-                    alert('A jelszónak legalább 4 karakter hosszúnak kell lennie!');
+                    this.ws.send(JSON.stringify({ type: 'join-channel', channel: channelId }));
+                    console.log(`📡 Join channel ${channelId} request sent`);
                 }
             }
             
             async createPeerConnection(peerId, initiator = false) {
                 if (this.peerConnections[peerId]) this.peerConnections[peerId].close();
+                console.log(`🔗 Creating peer connection: ${peerId} (initiator: ${initiator})`);
                 const pc = new RTCPeerConnection(ICE_SERVERS);
                 this.peerConnections[peerId] = pc;
                 if (this.localStream) this.localStream.getTracks().forEach(track => pc.addTrack(track, this.localStream));
@@ -191,6 +215,9 @@
                     if (event.candidate && this.ws) {
                         this.ws.send(JSON.stringify({ type: 'ice-candidate', candidate: event.candidate, to: peerId }));
                     }
+                };
+                pc.onconnectionstatechange = () => {
+                    console.log(`🔌 Connection state (${peerId}): ${pc.connectionState}`);
                 };
                 if (initiator) {
                     const offer = await pc.createOffer();
@@ -201,6 +228,7 @@
             }
             
             async handleOffer(data) {
+                console.log(`📞 Offer received from ${data.from}`);
                 const pc = await this.createPeerConnection(data.from);
                 await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
                 const answer = await pc.createAnswer();
@@ -209,33 +237,42 @@
             }
             
             async handleAnswer(data) {
+                console.log(`📞 Answer received from ${data.from}`);
                 const pc = this.peerConnections[data.from];
-                if (pc && pc.signalingState !== 'stable') await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                if (pc && pc.signalingState !== 'stable') {
+                    await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                }
             }
             
             async handleIceCandidate(data) {
                 const pc = this.peerConnections[data.from];
-                if (pc && pc.remoteDescription) await pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(() => {});
+                if (pc && pc.remoteDescription) {
+                    await pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(() => {});
+                }
             }
             
             closePeerConnection(peerId) {
-                if (this.peerConnections[peerId]) this.peerConnections[peerId].close();
-                delete this.peerConnections[peerId];
+                if (this.peerConnections[peerId]) {
+                    this.peerConnections[peerId].close();
+                    delete this.peerConnections[peerId];
+                }
                 const audioEl = document.getElementById(`audio-${peerId}`);
                 if (audioEl) audioEl.remove();
             }
             
             playRemoteAudio(stream, peerId) {
+                console.log(`🔊 Remote audio playing: ${peerId}`);
                 let audioElement = document.getElementById(`audio-${peerId}`);
                 if (!audioElement) {
                     audioElement = document.createElement('audio');
                     audioElement.id = `audio-${peerId}`;
                     audioElement.autoplay = true;
                     audioElement.playsInline = true;
+                    audioElement.volume = 1.0;
                     document.body.appendChild(audioElement);
                 }
                 audioElement.srcObject = stream;
-                audioElement.play().catch(() => {});
+                audioElement.play().catch(err => console.error('Audio play error:', err));
             }
             
             startTransmission() {
@@ -276,8 +313,6 @@
                 this.peers = [];
                 this.activePeers.clear();
                 this.channel = newChannel;
-                this.channelPassword = null;
-                this.isPrivateChannel = false;
                 this.joinChannel(newChannel);
                 this.render();
             }
@@ -315,12 +350,9 @@
                                 <div class="bg-gradient-to-b from-green-900 to-green-950 p-6 border-y-4 border-gray-700">
                                     <div class="bg-black rounded-lg p-4 shadow-inner">
                                         <div class="text-center mb-4">
-                                            <div class="text-green-400 font-mono text-sm mb-1 flex items-center justify-center gap-2">
-                                                CSATORNA ${this.isPrivateChannel ? '<span class="text-yellow-400">🔒</span>' : ''}
-                                            </div>
+                                            <div class="text-green-400 font-mono text-sm mb-1">CSATORNA</div>
                                             <div class="text-green-400 font-mono text-6xl font-bold tracking-wider">${String(this.channel).padStart(2, '0')}</div>
                                             <div class="text-green-400 font-mono text-xs mt-2">👥 ${this.peers.length} FELHASZNÁLÓ</div>
-                                            ${this.isPrivateChannel ? '<div class="text-yellow-400 font-mono text-xs mt-1">🔒 PRIVÁT CSATORNA</div>' : ''}
                                         </div>
                                         ${this.isTransmitting ? `
                                             <div class="mt-4">
@@ -345,16 +377,6 @@
                                             <button id="channelUp" class="bg-gray-700 hover:bg-gray-600 text-white px-4 py-3 rounded-lg font-bold text-xl">▶</button>
                                         </div>
                                     </div>
-                                    
-                                    <div class="grid grid-cols-2 gap-2 mb-4">
-                                        <button id="createPrivateBtn" class="px-4 py-2 rounded-lg font-semibold bg-yellow-600 hover:bg-yellow-700 text-white text-sm">
-                                            🔒 Privát Csatorna
-                                        </button>
-                                        <button id="joinPrivateBtn" class="px-4 py-2 rounded-lg font-semibold bg-blue-600 hover:bg-blue-700 text-white text-sm">
-                                            🔑 Belépés Jelszóval
-                                        </button>
-                                    </div>
-                                    
                                     <button id="muteBtn" class="w-full mb-4 px-6 py-3 rounded-lg font-semibold ${this.isMuted ? 'bg-red-600' : 'bg-gray-700'} text-white">
                                         ${this.isMuted ? '🔇 NÉMÍTVA' : '🔊 HANG BE'}
                                     </button>
@@ -367,7 +389,7 @@
                                     </button>
                                 </div>
                                 <div class="bg-gray-900 px-6 py-3 border-t-2 border-gray-700">
-                                    <p class="text-gray-400 text-xs text-center">${this.isConnected ? `Csatorna ${this.channel}` : 'Mikrofon szükséges'}</p>
+                                    <p class="text-gray-400 text-xs text-center">${this.isConnected ? `Csatorna ${this.channel}` : 'Csatlakozás...'}</p>
                                 </div>
                             </div>
                         </div>
@@ -385,12 +407,10 @@
                 document.getElementById('channelDown')?.addEventListener('click', () => this.changeChannel(Math.max(1, this.channel - 1)));
                 document.getElementById('channelUp')?.addEventListener('click', () => this.changeChannel(Math.min(40, this.channel + 1)));
                 document.getElementById('channelSlider')?.addEventListener('input', (e) => this.changeChannel(parseInt(e.target.value)));
-                document.getElementById('createPrivateBtn')?.addEventListener('click', () => this.showCreatePrivateChannelPrompt());
-                document.getElementById('joinPrivateBtn')?.addEventListener('click', () => this.showPasswordPrompt());
             }
         }
         
-        new CBRadio();
+        window.cbRadio = new CBRadio();
     </script>
 </body>
 </html>
